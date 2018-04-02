@@ -1,3 +1,5 @@
+# 정말 매우 짜증이난다!!  괜히 MNIST input pipeline바꿨다가 피봤다.... 원래대로  돌릴건데  피본게 억울해서
+# 피 본 모드 여기다가 백업한다, 나중에 심심 할 때 MNIST부분 무슨 문제가 생기는건지 탐구해보자
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -114,16 +116,45 @@ def __read_cifar(filenames, shuffle=True, cifar100=False):
 
   return tf.cast(image, tf.float32), label
 
-def __read_MNIST(training=True):
+def __read_MNIST(filenames,shuffle=False,training=True):
     """Reads and parses examples from MNIST data files."""
-    mnist = input_data.read_data_sets("Datasets/MNIST", one_hot=False)
-    if training:
-        images=tf.cast(tf.convert_to_tensor(mnist.train.images.reshape([55000,28,28,1])),tf.float32)
-        labels=tf.cast(tf.convert_to_tensor(mnist.train.labels),dtype=tf.int32)
-    else:
-        images = tf.cast(tf.convert_to_tensor(mnist.test.images.reshape([10000,28,28,1])),dtype=tf.float32)
-        labels = tf.cast(tf.convert_to_tensor(mnist.test.labels),dtype=tf.int32)
-    return images,labels
+    filename_queue_image = tf.train.string_input_producer(filenames[0], shuffle=shuffle, num_epochs=None)
+    filename_queue_label = tf.train.string_input_producer(filenames[1], shuffle=shuffle, num_epochs=None)
+    label_bytes = 1
+    height = 28
+    width = 28
+    depth = 1
+    image_bytes = height * width * depth
+    reader_image = tf.FixedLengthRecordReader(record_bytes=image_bytes, header_bytes=16)
+    reader_label = tf.FixedLengthRecordReader(record_bytes=label_bytes, header_bytes=8)
+    key_image, value_image = reader_image.read(filename_queue_image)
+    key_label, value_label = reader_label.read(filename_queue_label)
+
+    # Convert from a string to a vector of uint8 that is record_bytes long.
+    record_bytes_image = tf.decode_raw(value_image, tf.uint8)
+    record_bytes_label = tf.decode_raw(value_label, tf.uint8)
+
+    # The first bytes represent the label, which we convert from uint8->int32.
+    # The remaining bytes after the label represent the image, which we reshape
+    # from [depth * height * width] to [depth, height, width].
+
+    depth_major = tf.reshape(tf.slice(record_bytes_image, [0], [image_bytes]),
+                             # def slice(input_, begin, size, name=None):
+                             [depth, height, width])
+    label = tf.cast(tf.slice(record_bytes_label, [0], [label_bytes]), tf.int32)
+
+    image = tf.transpose(depth_major, [1, 2, 0])
+
+    return tf.cast(image, tf.float32), label
+
+    # mnist = input_data.read_data_sets("Datasets/MNIST", one_hot=False)
+    # if training:
+    #     images=tf.cast(tf.convert_to_tensor(mnist.train.images.reshape([55000,28,28,1])),tf.float32)
+    #     labels=tf.cast(tf.convert_to_tensor(mnist.train.labels),dtype=tf.int32)
+    # else:
+    #     images = tf.cast(tf.convert_to_tensor(mnist.test.images.reshape([10000,28,28,1])),dtype=tf.float32)
+    #     labels = tf.cast(tf.convert_to_tensor(mnist.test.labels),dtype=tf.int32)
+    # return images,labels
 
 """
 설명5:
@@ -136,13 +167,14 @@ min_queue_examples=1000, num_threads=8 는 미리 정해준다, 그리고 웬만
 """
 
 class DataProvider:
-    def __init__(self, data, size=None, training=True,MNIST=False):
+    def __init__(self, data, size=None, training=True,argum=False,num_threads=8):
         self.size = size or [None]*4
         self.data = data
         self.training = training
-        self.enqueue_many=MNIST
+        self.argum=argum
+        self.num_threads=num_threads
 
-    def next_batch(self, batch_size, min_queue_examples=3000, num_threads=8):
+    def next_batch(self, batch_size, min_queue_examples=5000):
         """Construct a queued batch of images and labels.
 
         Args:
@@ -160,19 +192,24 @@ class DataProvider:
         # read 'batch_size' images + labels from the example queue.
 
         image, label = self.data
+        if self.argum:
+            data=[preprocess_training(image, height=28, width=28), label]
+        else:
+            data=[image,label]
+
         if self.training:
             images, label_batch = tf.train.shuffle_batch(
-                [image, label],
-                batch_size=batch_size,
-                num_threads=num_threads,
-                capacity=min_queue_examples + 3 * batch_size,
-                min_after_dequeue=min_queue_examples, enqueue_many=self.enqueue_many)
+            data,
+            batch_size=batch_size,
+            num_threads=self.num_threads,
+            capacity=min_queue_examples + 3 * batch_size,
+            min_after_dequeue=min_queue_examples)
         else:
             images, label_batch = tf.train.batch(
-                [preprocess_evaluation(image, height=self.size[1], width=self.size[2]), label],
-                batch_size=batch_size,
-                num_threads=num_threads,
-                capacity=min_queue_examples + 3 * batch_size, enqueue_many=self.enqueue_many)
+            data,
+            batch_size=batch_size,
+            num_threads=self.num_threads,
+            capacity=min_queue_examples + 3 * batch_size)
 
         return images, tf.reshape(label_batch, [batch_size])
 """
@@ -242,10 +279,10 @@ def get_data_provider(name,training=True):
         data_dir = os.path.join(path, 'cifar-10-batches-bin/')
         if training:
             return DataProvider(__read_cifar([os.path.join(data_dir, 'data_batch_%d.bin' % i)
-                                    for i in range(1, 6)]), [50000, 32,32,3], True,False)
+                                    for i in range(1, 6)]), [50000, 32,32,3], True,True,num_threads=8)
         else:
             return DataProvider(__read_cifar([os.path.join(data_dir, 'test_batch.bin')]),
-                                [10000, 32,32, 3], False,False)
+                                [10000, 32,32, 3], False,True,num_threads=8)
     elif name == 'cifar100':
         path = os.path.join(DATA_DIR,'cifar100')
         url = URLs['cifar100']
@@ -257,14 +294,14 @@ def get_data_provider(name,training=True):
         else:
             return DataProvider([os.path.join(data_dir, 'test.bin')],10000, False, __read_cifar)
 
-
     elif name == 'MNIST':
+        data_dir = os.path.join(DATA_DIR, 'MNIST')
         if training:
-            return DataProvider(__read_MNIST(training=True), size=[55000, 28, 28, 1], training=True, MNIST=True)
+            return DataProvider(__read_MNIST([[data_dir+'/train-images.idx3-ubyte'],[data_dir+'/train-labels.idx1-ubyte']]),
+                                [55000, 28,28,1], True,False,1)
         else:
-            return DataProvider(__read_MNIST(training=False), size=[10000, 28, 28, 1], training=False,
-                                MNIST=True)
-
+            return DataProvider(__read_MNIST([[data_dir+'/t10k-images.idx3-ubyte'],[data_dir+'/t10k-labels.idx1-ubyte']]),
+                                [10000, 28,28,1], False,False,1)
         # if training:
         #     return DataProvider(__read_MNIST(training=True),size=[55000, 28,28, 1], training=True,argum=False)
         # else:

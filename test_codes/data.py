@@ -125,6 +125,15 @@ def __read_MNIST(training=True):
         labels = tf.cast(tf.convert_to_tensor(mnist.test.labels),dtype=tf.int32)
     return images,labels
 
+    # mnist = input_data.read_data_sets("Datasets/MNIST", one_hot=False)
+    # if training:
+    #     images=tf.cast(tf.convert_to_tensor(mnist.train.images.reshape([55000,28,28,1])),tf.float32)
+    #     labels=tf.cast(tf.convert_to_tensor(mnist.train.labels),dtype=tf.int32)
+    # else:
+    #     images = tf.cast(tf.convert_to_tensor(mnist.test.images.reshape([10000,28,28,1])),dtype=tf.float32)
+    #     labels = tf.cast(tf.convert_to_tensor(mnist.test.labels),dtype=tf.int32)
+    # return images,labels
+
 """
 설명5:
 클래스 안에 매서드가 한개있다! 클래스응용에 참 좋은 예제인 것 같다.
@@ -242,10 +251,10 @@ def get_data_provider(name,training=True):
         data_dir = os.path.join(path, 'cifar-10-batches-bin/')
         if training:
             return DataProvider(__read_cifar([os.path.join(data_dir, 'data_batch_%d.bin' % i)
-                                    for i in range(1, 6)]), [50000, 32,32,3], True,False)
+                                    for i in range(1, 6)]), [50000, 32,32,3], True,True,num_threads=8)
         else:
             return DataProvider(__read_cifar([os.path.join(data_dir, 'test_batch.bin')]),
-                                [10000, 32,32, 3], False,False)
+                                [10000, 32,32, 3], False,True,num_threads=8)
     elif name == 'cifar100':
         path = os.path.join(DATA_DIR,'cifar100')
         url = URLs['cifar100']

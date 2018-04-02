@@ -1,36 +1,20 @@
 import tensorflow as tf
-import math
-
-from tensorflow.python.training import moving_averages
-from tensorflow.contrib.framework import get_name_scope
 import numpy as np
+import customfunc
+from openpyxl import load_workbook
 FLAGS = tf.app.flags.FLAGS
-# 20180119 이 부분이 FLAGS 파싱하기 전에 적용이 되서 variation이 계속 안먹혔었다. 일단 급하니까 그냥 먹임
-# if FLAGS.Variation==True:
-#     Reset_Meanmean, Reset_Meanstd = 0., 0.1707
-#     Reset_Stdmean, Reset_Stdstd = 0.0942, 0.01884
-#     Set_Meanmean, Set_Meanstd = 0., 0.1538
-#     Set_Stdmean, Set_Stdstd = 0.1311, 0.06894
-# else:
-#     Reset_Meanmean, Reset_Meanstd = 0., 0.0000000001
-#     Reset_Stdmean, Reset_Stdstd = 0., 0.
-#     Set_Meanmean, Set_Meanstd = 0., 0.0000000001
-#     Set_Stdmean, Set_Stdstd = 0., 0.
-# Reset_Meanmean, Reset_Meanstd = 0., 0.1707
-# Reset_Stdmean, Reset_Stdstd = 0.0942, 0.01884
-# Set_Meanmean, Set_Meanstd = 0., 0.1538
-# Set_Stdmean, Set_Stdstd = 0.1311, 0.06894
-drift_Meanmean, drift_Meanstd = 0.09, 0.001
-drift_Stdmean, drift_Stdstd = 0, 0.0003
 
+@tf.RegisterGradient("fluc_grad")
+def fluc_grad(op,grad):
+    shape=op.inputs[1]._shape_as_list()
+    return grad,tf.zeros(shape=shape)
 
-def binarize(x,target_level=7):
+def binarize(x,target_level=FLAGS.target_level):
     assert (target_level>1) and (int(target_level)==target_level), \
         'target_level is not valid, please input the integer bigger than 1 '
     """
     Clip and binarize tensor using the straight through estimator (STE) for the gradient.
     """
-
     g = tf.get_default_graph()
     if target_level==2:
         with tf.name_scope("Binarized") as name:
@@ -40,20 +24,83 @@ def binarize(x,target_level=7):
                 if FLAGS.bit_deterministic:
                     results=results+tf.cast(x>(tf.reduce_max(x)/2),dtype=tf.float32)*0.4
     else:
-
         with g.gradient_override_map({"Round":"Identity"}):
             x = tf.tanh(x)
+            #####################################################
+            #1:
             x = x / tf.reduce_max(tf.abs(x)) * 0.5 + 0.5
+            #2:
+            # x = x / tf.reduce_mean(tf.abs(x))
+            # x = tf.clip_by_value(x,-1,1) * 0.5 + 0.5
+            #####################################################
             x=tf.round(x*(target_level-1))/(target_level-1)
         results=2*x-1
     return results
 
-@tf.RegisterGradient("fluc_grad")
-def fluc_grad(op,grad):
-    shape=op.inputs[1]._shape_as_list()
-    return grad,tf.zeros(shape=shape)
+def memory_mode(x,choice=0):
+    #기본정보
+    filter_shape = x.get_shape().as_list()
+    target_level = FLAGS.target_level
+    variation=FLAGS.Variation
+    level_index = tf.to_int32((target_level-1)*(x+1)/2)
+    tf.add_to_collection("Drift_value", tf.convert_to_tensor([]))
+    tf.add_to_collection("Drift_step", tf.convert_to_tensor([]))
+    tf.add_to_collection('Quantized_weight', x) # stage1
+    #정보 from the excel file
+    wb = load_workbook(filename='level_info.xlsx')
+    # print("We have infomation about:%s and we will use %d Levels"%(str(wb.sheetnames),target_level))
+    ws = wb[str(target_level)+'Levels']
+    r = np.array([cell.value for cell in tuple(ws.rows)[3 * choice]])
+    r = np.array([simple_r for simple_r in range(1,target_level+1)]).astype('float32') \
+        if r[0]==None else r.astype('float32')
+    #None as float32->nan?
+    r_var = np.array([cell.value for cell in tuple(ws.rows)[3 * choice + 1]]).astype('float32') \
+        if variation else np.zeros([target_level]).astype('float32')
+    r_ref = [cell.value for cell in tuple(ws.rows)[3 * choice + 2]][1:] if variation else (r[1:]+r[0:-1])/2
+    # ref에 variation 안넣었다.
 
-def fluctuate(x,scale=1,Drift=False):
+    # 준비
+    pre_tr = \
+        tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0],name='pre_target_resistance',trainable=False)
+    pre_tr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
+    pre_tr_update_op = pre_tr.assign(pre_tr_place)
+    pre_wr = \
+        tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0], name='pre_written_resistance', trainable=False)
+    pre_wr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
+    pre_wr_update_op = pre_wr.assign(pre_wr_place)
+    tf.add_to_collection('pre_Wbin',pre_tr_place)
+    tf.add_to_collection('pre_Wbin_update_op', pre_tr_update_op)
+    tf.add_to_collection('pre_Wfluc', pre_wr_place)
+    tf.add_to_collection('pre_Wfluc_update_op', pre_wr_update_op)
+    # 왜  바로 pre_r_place로 비교하지않는가,매번 feed 해주는게  그렇게  어려운 일인가?
+    tr = tf.gather(r, level_index)
+    tr_var = tf.gather(r_var, level_index)
+    # tf.add_to_collection('Target_resistance', tr)
+    tf.add_to_collection('Binarized_Weight', tr)  # stage2
+    # tf.add_to_collection('Pre_target_resistance', pre_tr)
+    # write phase
+    fluc_value=tf.reshape(tf.distributions.Normal(loc=0.,scale=tr_var).sample(1),shape=filter_shape)
+
+    # if Memristor resistance를 read해서 write여부를 결정할거면-오류수정
+    # pre_wr_index=customfunc.make_index(pre_wr,r_ref)
+    # tr_index = customfunc.make_index(tr, r_ref)
+    # keep_bool=tf.to_float(tf.equal(pre_wr_index,tr_index))
+    # if pre-iteration의 target resistance를 기준으로 하여 이번 cycle의 target resistance가 변했는지 여부로 결정할거면,오류무시
+    keep_bool=tf.to_float(tf.equal(pre_tr,tr))
+    update_bool=1-keep_bool
+
+    wr=keep_bool*pre_wr+update_bool*(tr+fluc_value)
+    tf.add_to_collection('Fluctuated_Weight', wr) # stage3
+    # read phase
+    rr=customfunc.make_index(wr,r_ref)
+    rr=2*rr/(target_level-1)-1
+    tf.add_to_collection('Read_weight', rr) # stage4
+    return rr
+
+
+
+
+def fluctuate(x,scale=1,target_level=FLAGS.target_level,Drift=False):
     filter_shape = x.get_shape().as_list()
     pre_Wbin = tf.Variable(initial_value=tf.zeros(shape=filter_shape),name='pre_Wbin',trainable=False)
     pre_Wbin_val_place=tf.placeholder(dtype=tf.float32,shape=filter_shape)
@@ -65,79 +112,65 @@ def fluctuate(x,scale=1,Drift=False):
     tf.add_to_collection('pre_Wbin_update_op', pre_Wbin_update_op)
     tf.add_to_collection('pre_Wfluc', pre_Wfluc_val_place)
     tf.add_to_collection('pre_Wfluc_update_op', pre_Wfluc_update_op)
+
     if FLAGS.Variation==True:
         Reset_Meanmean, Reset_Meanstd = 0., 0.1707
         Reset_Stdmean, Reset_Stdstd = 0.0942, 0.01884
         Set_Meanmean, Set_Meanstd = 0., 0.1538
         Set_Stdmean, Set_Stdstd = 0.1311, 0.06894
+        # 퍼센테이지 맵핑으로 간단하게 구했다,정밀하지는 않다.
     else:
         Reset_Meanmean, Reset_Meanstd = 0., 0.0000000001
         Reset_Stdmean, Reset_Stdstd = 0., 0.
         Set_Meanmean, Set_Meanstd = 0., 0.0000000001
         Set_Stdmean, Set_Stdstd = 0., 0.
-    with tf.name_scope("Fluctuated") as name:
-        Reset_Meanvalue = tf.Variable(tf.random_normal(shape=filter_shape,
-                                            mean=Reset_Meanmean,
-                                            stddev=Reset_Meanstd, dtype=tf.float32),
-                                            name="Reset_MeanValue",trainable=False)
-        Reset_Stdvalue = tf.Variable(((Reset_Meanvalue - Reset_Meanmean) / Reset_Meanstd)
-                                     * Reset_Stdstd + Reset_Stdmean,
-                                     name='Reset_Stdvale',
-                                     trainable=False)
-        Set_Meanvalue = tf.Variable(tf.random_normal(shape=filter_shape,
-                                        mean=Set_Meanmean,
-                                        stddev=Set_Meanstd,
-                                        dtype=tf.float32),
-                                        name="Set_MeanValue",trainable=False)
-        Set_Stdvalue = tf.Variable(((Set_Meanvalue - Set_Meanmean) / Set_Meanstd)
-                                   * Set_Stdstd + Set_Stdmean,
-                                   name='Set_Stdvalue',
-                                   trainable=False)
-        #20180226 : 여기에 variable을 주구장창 추가하면 variable 이 너무 많아지지 않나
-        fluc_Reset = tf.reshape(tf.distributions.Normal(loc=Reset_Meanvalue, scale=Reset_Stdvalue).sample(1),filter_shape)
-        fluc_Set = tf.reshape(tf.distributions.Normal(loc=Set_Meanvalue, scale=Set_Stdvalue).sample(1), filter_shape)
-        # 드리프트에 var 넣기2##################################################################
-        drift_Meanvalue = tf.Variable(tf.random_normal(shape=filter_shape,
-                                                       mean=drift_Meanmean, stddev=drift_Meanstd, dtype=tf.float32,
-                                                       name="Mean_Value_drift"), trainable=False, name='drift_Meanvalue')
-        drift_Stdvalue = tf.cast(tf.Variable(((drift_Meanvalue - drift_Meanmean) / drift_Meanstd) * drift_Stdstd +
-                                             drift_Stdmean, trainable=False, name='drift_Stdvalue'), dtype=tf.float32)
 
-        g = tf.get_default_graph()
-            # assign 1 to elements which have same state with pre-state
+    with tf.name_scope("Fluctuated") as name:
+        # variation을 만들자
+        fluc_list=[]
+        # for i in range(2):
+        #      fluc_list += [customfunc.get_distrib([0., 0., FLAGS.target_std, 0.04],filter_shape)]
+        fluc_list += [customfunc.get_distrib([Set_Meanmean, Set_Meanstd, Set_Stdmean, Set_Stdstd], filter_shape)]
+        fluc_list += [customfunc.get_distrib([Reset_Meanmean, Reset_Meanstd, Reset_Stdmean, Reset_Stdstd], filter_shape)]
+        # 여기서 weight value에 따라 선택적으로 fluc값을 generate하면 random값이 훨씬 줄어들겠다.
+        # assign 1 to elements which have same state with pre-state
         keep_element = tf.cast(tf.equal(x,pre_Wbin), tf.float32)
         # assign 1 to elements which have different state with pre-state
         update_element = tf.cast(tf.not_equal(x,pre_Wbin), tf.float32)
         # 이 부분에서 쓰지도않는 랜덤 값이 많이 발생하는데 일단 두고 나중에 고치든가 하자
-        Wfluc_Reset = update_element * fluc_Reset * tf.cast(x > 0, tf.float32)
-        Wfluc_Set = update_element * fluc_Set * tf.cast(x <= 0, tf.float32)
-        # fluctuation이 적용 된 최종 weight 값,Reset,set에 drift를 따로 적용하기 위해 pre_Wbin이 0보다 큰 부분,작은 부분, 두 부분으로 나누었다.
+        Wfluc_Reset = update_element * fluc_list[-1] * tf.cast(x > 0, tf.float32)
+        Wfluc_Set = update_element * fluc_list[0] * tf.cast(x <= 0, tf.float32)
+        # Variation으로 인한 delta
+
         step_col = tf.get_collection("Step")
-
-        drift_value = tf.Variable(tf.ones(shape=filter_shape) * 0.09, trainable=False)
-        step = tf.Variable(tf.zeros(shape=filter_shape, dtype=tf.float32), trainable=False)
-        if Drift and step_col!=[]:
-
+        if Drift and step_col!=[]:   #drift의 구성요소, d value and step_num을 다뤄주면 된다.
+            # 1:d value를 만들자.
+            drift_value = np.array(np.ones(shape=filter_shape) * 0.09)  #drift_value가 dvalue이다,즉 power law에서 지수부분
+            drift_Meanmean, drift_Meanstd = 0.09, 0.001
+            drift_Stdmean, drift_Stdstd = 0, 0.0003
+            new_value=customfunc.get_distrib([drift_Meanmean, drift_Meanstd, drift_Stdmean,drift_Stdstd], filter_shape)
             new_drift = tf.cast((pre_Wbin <= 0), dtype=tf.float32)* tf.cast((x > 0), dtype=tf.float32)
-            # 전사이클에서는 -1이었고 이번 사이클에 1로 업데이트 된 element 부분을 1로
-            new_value = tf.reshape(tf.distributions.Normal(loc=drift_Meanvalue, scale=drift_Stdvalue).sample(1)
-                                   , shape=filter_shape)
-            # # 전체의 random 값을 generate.
-            assign_drift = drift_value.assign(new_value * new_drift + drift_value * (1 - new_drift))
+            # 전사이클에서는 -1이었고 이번 사이클에 1로 업데이트 된 element 부분을 1로, 즉 한번 set->reset이 될 때마다 d value가 바뀐다.
+            # note1:사실 매 iteration drift 할 때마다 d value조차도 약간 바뀌지만 그건 일단 고려하지 않았다.
+            # note2:여기서의 drift는 순전히 2levels일 때만 고려,그 이상의 MLC에서는 drift를 사용하지않기를 추천(unrealistic).
+            drift_value = new_value * new_drift + drift_value * (1 - new_drift)
             tf.add_to_collection("Drift_value",drift_value)
-            with tf.control_dependencies([assign_drift]):
-                #step = tf.Variable(tf.zeros(shape=filter_shape, dtype=tf.float32), trainable=False)
-                step = tf.assign(step, step * keep_element + keep_element,name="Drift_step")
-                tf.add_to_collection("Drift_step",step)
-                #step은 각 웨이트가 드리프트를 지금 몇스텝째 하고있는지를 나타낸다.
-                drift_factor = (step+1.)/(tf.cast(tf.equal(step,0.),dtype=tf.float32)+step)
-                drift_scale =  (tf.log(drift_factor) / tf.log(10.))*drift_value
-                #drift_value는 dvalue이다,즉 power law에서 지수부분
-                tf.add_to_collection("testt", drift_scale)
+
+            step = tf.Variable(tf.zeros(shape=filter_shape, dtype=tf.float32), trainable=False)
+            step = tf.assign(step, keep_element*(step+1),name="Drift_step")
+            tf.add_to_collection("Drift_step",step)
+            # step은 각 웨이트가 드리프트를 지금 몇스텝째 하고있는지를 나타낸다.
+
+            drift_factor = (step+1.)/(tf.cast(tf.equal(step,0.),dtype=tf.float32)+step)
+            # step=0인 부분은 결국 분모=1+0=1, step!=0인 부분은 분모=0+step=step
+            drift_scale =  (tf.log(drift_factor) / tf.log(10.))*drift_value
+            # log가 들어가는 이유는 이 코드 작성 당시 R->W의 맵핑을 log함수라고 생각했었기 때문이다. 지금은 로그맵핑을 쓰지는않을 것 같아서
+            # MAC에서 맵핑을 어떻게 하느냐에 따라 수정이 필요할거 같다.
         else:
             tf.add_to_collection("Drift_value", tf.convert_to_tensor([]))
-            tf.add_to_collection("Drift_step", tf.convert_to_tensor([]))
+            tf.add_to_collection("Drift_step", tf.convert_to_tensor([])) #이 두줄은 summary부분 쉽게 만드려고 했던거다.
             drift_scale = tf.constant(0.)
+        g = tf.get_default_graph()
         with g.gradient_override_map({"Mul": "fluc_grad", "Cast": "Identity",
                                       "Equal": "fluc_grad", "Greater": "fluc_grad",
                                       "LessEqual": "fluc_grad", "NotEqual": "fluc_grad",
@@ -146,6 +179,7 @@ def fluctuate(x,scale=1,Drift=False):
                 Wfluc = tf.multiply(x, update_element) +tf.cast(tf.greater(pre_Wbin,0), tf.float32) * keep_element * (pre_Wfluc + drift_scale)+ \
                         tf.cast(tf.less_equal(pre_Wbin,0), tf.float32) * keep_element * pre_Wfluc * 1. \
                         + Wfluc_Reset + Wfluc_Set
+                #variation drift 각각  출력을  만드는게 더이쁘겠다.  그리고  둘  다 안하면  이  파트어떻게되는거야
         return Wfluc
 """
 주의:binarize(x)가 activation까지 바이너리화 하는 중이다.
@@ -269,10 +303,12 @@ def BinarizedWeightOnlyAffine(nOutputPlane, bias=True, name=None, reuse=None, Dr
             nInputPlane = reshaped.get_shape().as_list()[1]
             w = tf.get_variable('weight', [nInputPlane, nOutputPlane], initializer=tf.contrib.layers.xavier_initializer())
             bin_w = binarize(w)
-            fluc_w = fluctuate(bin_w,Drift=Drift)
+            # fluc_w = fluctuate(bin_w,Drift=Drift)
+            # tf.add_to_collection('Binarized_Weight', bin_w)
+            # tf.add_to_collection('Fluctuated_Weight', fluc_w)
             tf.add_to_collection('Original_Weight', w)
-            tf.add_to_collection('Binarized_Weight', bin_w)
-            tf.add_to_collection('Fluctuated_Weight', fluc_w)
+            fluc_w=tf.stop_gradient(memory_mode(bin_w,choice=0)-bin_w)+bin_w
+
             output = tf.matmul(reshaped, fluc_w)
             if bias:
                 b = tf.get_variable('bias', [nOutputPlane],initializer=tf.zeros_initializer)
