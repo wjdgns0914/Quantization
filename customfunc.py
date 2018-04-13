@@ -40,8 +40,24 @@ def magic_print(*args,file=None):
         print(*args, file=file)
         print("'''",file=file)
 
+
+
+
 def make_index(x,ref):
-    index=tf.to_float(x>=ref[0])
-    for ref in ref[1:]:
-        index+=tf.to_float(x>=ref)
-    return index
+    # leng = len(ref)
+    # weight_shape = x.get_shape().as_list()
+    # index = tf.ones(shape=weight_shape, dtype=tf.int32)
+    # for i in range(leng):
+    #     level = tf.ones(shape=weight_shape, dtype=tf.int32) * (leng - i + 1)
+    #     mask = tf.logical_and(x>=ref[leng-i-1],tf.equal(index,1))
+    #     index = tf.where(mask,level,index)
+    weight_shape=x.get_shape().as_list()
+    index=tf.zeros(shape=weight_shape,dtype=tf.float32)
+    
+
+
+    #case 3
+    # index = tf.to_float(x>=ref[0])
+    # for ref in ref[1:]:
+    #     index += tf.to_float(x>=ref)
+    return index+1

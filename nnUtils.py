@@ -1,15 +1,108 @@
+from Myoption import *
 import tensorflow as tf
 import numpy as np
 import customfunc
 from openpyxl import load_workbook
 FLAGS = tf.app.flags.FLAGS
-
 @tf.RegisterGradient("fluc_grad")
 def fluc_grad(op,grad):
     shape=op.inputs[1]._shape_as_list()
     return grad,tf.zeros(shape=shape)
 
-def binarize(x,target_level=FLAGS.target_level):
+def scalebybits(bits):
+    return 2.0 ** (bits - 1)
+
+def shiftbyval(x):
+    return 2.0 ** tf.round(tf.log(x+1e-12) / tf.log(2.0))
+
+def quantize(x, target_level=2 ** 8):
+    assert np.floor(target_level) == target_level, "Target_level should be a integer"
+    bits = np.ceil(np.log(target_level) / np.log(2.0))
+    SCALE = scalebybits(bits)
+
+    # shift=shiftbyval(tf.abs(x))  #We don't shift x in this function, this function is only for quantizatizing any input.
+    if bits > 15:
+        print("The target_level is to high, We don't quantize this.")
+        # 15비트 넘어가면 양자화 안하겠다는건데, 나름 괜찮은 선택 같다, 그 위는 양자화해도 크게 득도 없고 아래에서 결판나니까
+        y = x
+    elif bits == 1:  # BNN
+        print("The target_level=1 and we use BNN")
+        y = tf.sign(x)
+    elif target_level % 2 == 1:
+        print('target_level is a odd number')
+        y = tf.round(x * tf.floor(target_level / 2)) / SCALE
+        # 20180410
+        # 레벨 수는 맞추되, 그 레벨의 값이 2의 승수로 만든다.
+        # 다만 이 부분에서 확인이 안된건 weight 값에 따라 학습결과가 달라지나 안달라지나를 확인해야한다.
+        # -0.5, 0, 0.5와 -1, 0, 1의 학습결과가 달라지나 안달라지나?
+        # BatchNorm쓰면 별로 안달리질거고, WAGE에서는 scale layer를 쓰는데 그걸 여기 구현하지는 않았다.
+    else:
+        print('target_level is a even number')
+        SCALE = SCALE * 2
+        y = (tf.sign(x)*(2*tf.ceil(tf.abs(x)*(target_level/2))-1)+
+             tf.to_float(tf.equal(x,0))*tf.sign(tf.random_uniform(x.get_shape(),-1.,1.)))/SCALE
+    return tf.stop_gradient(y - x) + x
+
+def clip(x, target_level=2 ** 8):
+    # 이게 왜 필요하냐?
+    # 레벨 수가 몇이든 간에 결국 해당하는 bits의 2의 승수배로 weight 값을 주게된다.
+    # 그니까 그 최댓값을 넘어가는 값은 다 최댓값으로 맵핑시킬 필요가 있다.
+    if target_level==None:
+        MAX=1.
+        MIN=-1.
+
+    else:
+        assert np.floor(target_level) == target_level, "Target_level should be a integer"
+        bits = np.ceil(np.log(target_level) / np.log(2.0))
+        SCALE = scalebybits(bits)
+        if bits > 15 or bits == 1:
+            delta = 0.
+        elif target_level % 2 == 1:
+            limit = SCALE - np.floor(target_level/2)
+            delta = 1. / SCALE
+        else:
+            limit = SCALE*2 - target_level + 1
+            delta = 1. / (SCALE*2)
+        MAX = +1 - limit * delta
+        MIN = -1 + limit * delta
+    y = tf.clip_by_value(x, MIN, MAX, name='saturate')
+    return tf.stop_gradient(y - x) + x
+
+def quantize_G(x, target_level=2 ** 8):
+    bitsG = np.ceil(np.log(target_level) / np.log(2.0))
+    SCALE = scalebybits(bitsG)
+    with tf.name_scope('Quantize_G'):
+        if bitsG > 15:
+            return x
+        else:
+            if x.name.lower().find('batchnorm') > -1:
+                return x  # batch norm parameters, not quantize now
+            xmax = tf.reduce_max(tf.abs(x))
+            tf.add_to_collection('testt',xmax)
+            y = x / shiftbyval(xmax)
+            norm = quantize(LR * y, 4095)
+            norm_sign = tf.sign(norm)
+            norm_abs = tf.abs(norm)
+            norm_int = tf.floor(norm_abs)
+            norm_float = norm_abs - norm_int
+            rand_float = tf.random_uniform(x.get_shape(), 0, 1)
+            norm = norm_sign * (norm_int + 0.5 * (tf.sign(norm_float - rand_float) + 1))
+            return norm / SCALE
+
+def quantize_W(x, target_level=2 ** 8):
+    bitsW = np.ceil(np.log(target_level) / np.log(2.0))
+    with tf.name_scope('Quantize_W'):
+        if bitsW > 15:
+            return x
+        else:
+            xmax = tf.to_float(tf.reduce_max(tf.abs(x)))
+            y = x / shiftbyval(xmax)
+            #y = clip(quantize(y, target_level), target_level)
+            y = quantize(clip(y, None), target_level)
+            # 20180410: clipr과 quantize의 적용 순서에 대한 명확한 이해가 없다.
+            # we scale W in QW rather than QA for simplicity
+            return x + tf.stop_gradient(y - x)  # skip derivation of Quantize and Clip
+def quantize_old(x,target_level=FLAGS.Wq_target_level):
     assert (target_level>1) and (int(target_level)==target_level), \
         'target_level is not valid, please input the integer bigger than 1 '
     """
@@ -38,69 +131,79 @@ def binarize(x,target_level=FLAGS.target_level):
     return results
 
 def memory_mode(x,choice=0):
-    #기본정보
-    filter_shape = x.get_shape().as_list()
-    target_level = FLAGS.target_level
-    variation=FLAGS.Variation
-    level_index = tf.to_int32((target_level-1)*(x+1)/2)
+    #기본정보, 신경 쓸 필요 없음
+    tf.add_to_collection("Original_Weight", x)  # stage1
     tf.add_to_collection("Drift_value", tf.convert_to_tensor([]))
     tf.add_to_collection("Drift_step", tf.convert_to_tensor([]))
-    tf.add_to_collection('Quantized_weight', x) # stage1
+    filter_shape = x.get_shape().as_list()
+    target_level = FLAGS.W_target_level
+    bits = np.ceil(np.log(target_level) / np.log(2.0))
+    variation=FLAGS.Variation
+
+    if target_level%2==1:
+        level_index = tf.to_int32(tf.round(x*scalebybits(bits)+tf.ceil(target_level/2)))-1
+    else:
+        level_index = tf.to_int32(tf.ceil((x*scalebybits(bits)*2+target_level)/2))-1
+
     #정보 from the excel file
     wb = load_workbook(filename='level_info.xlsx')
-    # print("We have infomation about:%s and we will use %d Levels"%(str(wb.sheetnames),target_level))
-    ws = wb[str(target_level)+'Levels']
-    r = np.array([cell.value for cell in tuple(ws.rows)[3 * choice]])
-    r = np.array([simple_r for simple_r in range(1,target_level+1)]).astype('float32') \
-        if r[0]==None else r.astype('float32')
-    #None as float32->nan?
-    r_var = np.array([cell.value for cell in tuple(ws.rows)[3 * choice + 1]]).astype('float32') \
-        if variation else np.zeros([target_level]).astype('float32')
-    r_ref = [cell.value for cell in tuple(ws.rows)[3 * choice + 2]][1:] if variation else (r[1:]+r[0:-1])/2
-    # ref에 variation 안넣었다.
-
+    sheetname=str(target_level)+'Levels'
+    if str(wb.sheetnames).find(sheetname)>-1:
+        ws = wb[sheetname]
+        r = np.array([cell.value for cell in tuple(ws.rows)[3 * choice]])
+        r = np.array([simple_r for simple_r in range(1,target_level+1)]).astype('float32') \
+            if r[0]==None else r.astype('float32')
+        r_var = np.array([cell.value for cell in tuple(ws.rows)[3 * choice + 1]]).astype('float32') \
+            if variation else np.zeros([target_level]).astype('float32')
+        r_ref = [cell.value for cell in tuple(ws.rows)[3 * choice + 2]][1:] if variation else (r[1:]+r[0:-1])/2
+        # ref에 variation 안넣었다.
+    else:
+        r=np.array([r for r in range(1,target_level+1)]).astype('float32')
+        r_var=np.zeros([target_level]).astype('float32')
+        r_ref=(r[1:]+r[0:-1])/2
     # 준비
-    pre_tr = \
-        tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0],name='pre_target_resistance',trainable=False)
-    pre_tr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
-    pre_tr_update_op = pre_tr.assign(pre_tr_place)
-    pre_wr = \
-        tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0], name='pre_written_resistance', trainable=False)
-    pre_wr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
-    pre_wr_update_op = pre_wr.assign(pre_wr_place)
-    tf.add_to_collection('pre_Wbin',pre_tr_place)
-    tf.add_to_collection('pre_Wbin_update_op', pre_tr_update_op)
-    tf.add_to_collection('pre_Wfluc', pre_wr_place)
-    tf.add_to_collection('pre_Wfluc_update_op', pre_wr_update_op)
-    # 왜  바로 pre_r_place로 비교하지않는가,매번 feed 해주는게  그렇게  어려운 일인가?
     tr = tf.gather(r, level_index)
     tr_var = tf.gather(r_var, level_index)
-    # tf.add_to_collection('Target_resistance', tr)
-    tf.add_to_collection('Binarized_Weight', tr)  # stage2
-    # tf.add_to_collection('Pre_target_resistance', pre_tr)
-    # write phase
-    fluc_value=tf.reshape(tf.distributions.Normal(loc=0.,scale=tr_var).sample(1),shape=filter_shape)
+    tf.add_to_collection('Binarized_Weight', tr)  # stage2/target_resistance
 
+    if FLAGS.Variation==True:
+        pre_tr = \
+            tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0],name='pre_target_resistance',trainable=False)
+        pre_tr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
+        pre_tr_update_op = pre_tr.assign(pre_tr_place)
+        pre_wr = \
+            tf.Variable(initial_value=tf.ones(shape=filter_shape)*r[0], name='pre_written_resistance', trainable=False)
+        pre_wr_place = tf.placeholder(dtype=tf.float32, shape=filter_shape)
+        pre_wr_update_op = pre_wr.assign(pre_wr_place)
+        tf.add_to_collection('pre_Wbin',pre_tr_place)
+        tf.add_to_collection('pre_Wbin_update_op', pre_tr_update_op)
+        tf.add_to_collection('pre_Wfluc', pre_wr_place)
+        tf.add_to_collection('pre_Wfluc_update_op', pre_wr_update_op)
+        # 왜  바로 pre_r_place로 비교하지않는가,매번 feed 해주는게  그렇게  어려운 일인가?
+        # write phase
+        fluc_value=tf.reshape(tf.distributions.Normal(loc=0.,scale=tr_var).sample(1),shape=filter_shape)
     # if Memristor resistance를 read해서 write여부를 결정할거면-오류수정
     # pre_wr_index=customfunc.make_index(pre_wr,r_ref)
     # tr_index = customfunc.make_index(tr, r_ref)
     # keep_bool=tf.to_float(tf.equal(pre_wr_index,tr_index))
     # if pre-iteration의 target resistance를 기준으로 하여 이번 cycle의 target resistance가 변했는지 여부로 결정할거면,오류무시
-    keep_bool=tf.to_float(tf.equal(pre_tr,tr))
-    update_bool=1-keep_bool
-
-    wr=keep_bool*pre_wr+update_bool*(tr+fluc_value)
+        keep_bool=tf.to_float(tf.equal(pre_tr,tr))
+        update_bool=1-keep_bool
+        wr=keep_bool*pre_wr+update_bool*(tr+fluc_value)
+    else:
+        wr=tr
     tf.add_to_collection('Fluctuated_Weight', wr) # stage3
     # read phase
-    rr=customfunc.make_index(wr,r_ref)
-    rr=2*rr/(target_level-1)-1
-    tf.add_to_collection('Read_weight', rr) # stage4
+    # rr=tr
+    rr=tf.to_float(customfunc.make_index(wr,r_ref))
+    if target_level%2==1:
+        rr= (rr-tf.ceil(target_level/2))/scalebybits(bits)
+    else:
+        rr =(2*rr-1-target_level)/scalebybits(bits+1)
+    tf.add_to_collection('Read_Weight', rr) # stage4
     return rr
 
-
-
-
-def fluctuate(x,scale=1,target_level=FLAGS.target_level,Drift=False):
+def fluctuate(x,scale=1,target_level=FLAGS.Wq_target_level,Drift=False):
     filter_shape = x.get_shape().as_list()
     pre_Wbin = tf.Variable(initial_value=tf.zeros(shape=filter_shape),name='pre_Wbin',trainable=False)
     pre_Wbin_val_place=tf.placeholder(dtype=tf.float32,shape=filter_shape)
@@ -181,6 +284,29 @@ def fluctuate(x,scale=1,target_level=FLAGS.target_level,Drift=False):
                         + Wfluc_Reset + Wfluc_Set
                 #variation drift 각각  출력을  만드는게 더이쁘겠다.  그리고  둘  다 안하면  이  파트어떻게되는거야
         return Wfluc
+
+def BinarizedWeightOnlyAffine(nOutputPlane, bias=True, name=None, reuse=None, Drift=False):
+    def bwo_affineLayer(x, is_training=True):
+        with tf.variable_scope(values=[x], name_or_scope=name, default_name='Affine', reuse=reuse):
+
+            '''
+            Note that we use binarized version of the input (bin_x) and the weights (bin_w). Since the binarized function uses STE
+            we calculate the gradients using bin_x and bin_w but we update w (the full precition version).
+            '''
+            reshaped = tf.reshape(x, [x.get_shape().as_list()[0], -1])
+            nInputPlane = reshaped.get_shape().as_list()[1]
+            w = tf.get_variable('weight', [nInputPlane, nOutputPlane], initializer=tf.contrib.layers.xavier_initializer())
+            read_w=tf.stop_gradient(memory_mode(w, choice=0) - w) + w
+            quantized_w = quantize_W(read_w,FLAGS.Wq_target_level)
+            # tf.add_to_collection('Original_Weight',w)
+            # tf.add_to_collection("Drift_value", tf.convert_to_tensor([]))
+            # tf.add_to_collection("Drift_step", tf.convert_to_tensor([]))
+            output = tf.matmul(reshaped, quantized_w)
+            if bias:
+                b = tf.get_variable('bias', [nOutputPlane],initializer=tf.zeros_initializer)
+                output = tf.nn.bias_add(output, b)
+        return output
+    return bwo_affineLayer
 """
 주의:binarize(x)가 activation까지 바이너리화 하는 중이다.
 아래의 세개는 각각 Binary Conv layer,Binary Conv layer for weight, Vanilla Conv layer
@@ -192,9 +318,9 @@ def BinarizedSpatialConvolution(nOutputPlane, kW, kH, dW=1, dH=1,
         with tf.variable_scope(values=[x], name_or_scope=None, default_name=name,reuse=reuse):
             w = tf.get_variable('weight', [kH, kW, nInputPlane, nOutputPlane],
                             initializer=tf.contrib.layers.xavier_initializer_conv2d())
-            bin_x = binarize(x) if bin else x
+            bin_x = quantize(x) if bin else x
             tf.add_to_collection(tf.GraphKeys.ACTIVATIONS, bin_x)
-            bin_w = binarize(w)
+            bin_w = quantize(w)
             fluc_w = fluctuate(bin_w,Drift=Drift) if fluc else bin_w
             tf.add_to_collection('Original_Weight',w)
             tf.add_to_collection('Binarized_Weight', bin_w)
@@ -220,7 +346,7 @@ def BinarizedWeightOnlySpatialConvolution(nOutputPlane, kW, kH, dW=1, dH=1,
         with tf.variable_scope(values=[x], name_or_scope=None, default_name=name, reuse=reuse):
             w = tf.get_variable('weight', [kH, kW, nInputPlane, nOutputPlane],
                             initializer=tf.contrib.layers.xavier_initializer_conv2d())
-            bin_w = binarize(w)
+            bin_w = quantize(w)
             fluc_w = fluctuate(bin_w,Drift=Drift) if fluc else bin_w
             tf.add_to_collection('Original_Weight', w)
             tf.add_to_collection('Binarized_Weight', bin_w)
@@ -273,12 +399,12 @@ def BinarizedAffine(nOutputPlane, bias=True, name=None, reuse=None,bin=True,fluc
             Note that we use binarized version of the input (bin_x) and the weights (bin_w). Since the binarized function uses STE
             we calculate the gradients using bin_x and bin_w but we update w (the full precition version).
             '''
-            bin_x = binarize(x) if bin else x
+            bin_x = quantize(x) if bin else x
             tf.add_to_collection(tf.GraphKeys.ACTIVATIONS, bin_x)
             reshaped = tf.reshape(bin_x, [x.get_shape().as_list()[0], -1])
             nInputPlane = reshaped.get_shape().as_list()[1]
             w = tf.get_variable('weight', [nInputPlane, nOutputPlane], initializer=tf.contrib.layers.xavier_initializer())
-            bin_w = binarize(w)
+            bin_w = quantize(w)
             fluc_w = fluctuate(bin_w,Drift=Drift) if fluc else bin_w
             tf.add_to_collection('Original_Weight', w)
             tf.add_to_collection('Binarized_Weight', bin_w)
@@ -291,30 +417,7 @@ def BinarizedAffine(nOutputPlane, bias=True, name=None, reuse=None,bin=True,fluc
         return output
     return b_affineLayer
 
-def BinarizedWeightOnlyAffine(nOutputPlane, bias=True, name=None, reuse=None, Drift=False):
-    def bwo_affineLayer(x, is_training=True):
-        with tf.variable_scope(values=[x], name_or_scope=name, default_name='Affine', reuse=reuse):
 
-            '''
-            Note that we use binarized version of the input (bin_x) and the weights (bin_w). Since the binarized function uses STE
-            we calculate the gradients using bin_x and bin_w but we update w (the full precition version).
-            '''
-            reshaped = tf.reshape(x, [x.get_shape().as_list()[0], -1])
-            nInputPlane = reshaped.get_shape().as_list()[1]
-            w = tf.get_variable('weight', [nInputPlane, nOutputPlane], initializer=tf.contrib.layers.xavier_initializer())
-            bin_w = binarize(w)
-            # fluc_w = fluctuate(bin_w,Drift=Drift)
-            # tf.add_to_collection('Binarized_Weight', bin_w)
-            # tf.add_to_collection('Fluctuated_Weight', fluc_w)
-            tf.add_to_collection('Original_Weight', w)
-            fluc_w=tf.stop_gradient(memory_mode(bin_w,choice=0)-bin_w)+bin_w
-
-            output = tf.matmul(reshaped, fluc_w)
-            if bias:
-                b = tf.get_variable('bias', [nOutputPlane],initializer=tf.zeros_initializer)
-                output = tf.nn.bias_add(output, b)
-        return output
-    return bwo_affineLayer
 
 #bias 더 해주는 레이어
 def Linear(nInputPlane, nOutputPlane):

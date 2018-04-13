@@ -1,4 +1,4 @@
-import tensorflow as tf
+import Myoption
 import importlib
 import numpy as np
 from tensorflow.python.platform import gfile
@@ -6,66 +6,9 @@ from data import *
 from evaluate import evaluate
 from tqdm import tqdm
 import customfunc
-
-tf.set_random_seed(333)  # reproducibility
-MOVING_AVERAGE_DECAY = 0.999
-WEIGHT_DECAY_FACTOR = 0.0001
-daystr,timestr=customfunc.beautifultime()
-
+import nnUtils
 FLAGS = tf.app.flags.FLAGS
-# Basic model parameters which will be often modified.
-tf.app.flags.DEFINE_integer('batch_size', 50,
-                            """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_integer('num_epochs', 200,
-                            """Number of epochs to train. -1 for unlimited""")
-tf.app.flags.DEFINE_float('learning_rate', 0.0001,
-                            """Initial learning rate used.""")
-tf.app.flags.DEFINE_string('dataset', 'MNIST',
-                           """Name of dataset used.""")
-tf.app.flags.DEFINE_string('model','MLP_00_Basic_512*2',    #'Probe_MLP',
-                           """Name of loaded model.""")
-# Level2 Parameters which will be sometimes modified.
-tf.app.flags.DEFINE_integer('target_level', 4,
-                            """Target level.""")
-tf.app.flags.DEFINE_float('target_std', 0.,
-                            """Target std.""")
-tf.app.flags.DEFINE_bool('summary', True,                   #Log only include accuracy data
-                           """Record summary.""")
-tf.app.flags.DEFINE_bool('summary2', True,                 #Log also include histogram, weight's scalar graph..etc
-                           """Record summary2.""")
-tf.app.flags.DEFINE_bool('Variation', False,
-                           """Variation or Not.""")
-tf.app.flags.DEFINE_bool('Drift1', False,
-                           """Drift or Not.""")
-tf.app.flags.DEFINE_bool('Drift2', False,
-                           """Drift or Not.""")
-tf.app.flags.DEFINE_bool('Weight_decay', False,
-                           """Weightdecay or Not.""")
-tf.app.flags.DEFINE_bool('Fine_tuning', False,            #FC layer만 작동시킴
-                           """Fine_tuning or Not.""")
-tf.app.flags.DEFINE_bool('Load_checkpoint', False,        #체크포인트를 불러 올 것인가?
-                           """Load_checkpoint or Not.""")
-load_checkpoint_path='./results/today/05cifar10_BNN_big2(Drift1_Var_125epoch_81%)'
-tf.app.flags.DEFINE_string('load', '',
-                           """Name of loaded dir.""")
-# Level3 Parameters which will be seldom modified.
-tf.app.flags.DEFINE_string('save', timestr,
-                           """Name of saved dir.""")
-tf.app.flags.DEFINE_bool('bit_deterministic', False,       # -1,1,1.4로 양자화 함(2비트)
-                           """2bit_deterministic or Not.""")
-tf.app.flags.DEFINE_string('log', 'ERROR',
-                           'The threshold for what messages will be logged '
-                            """DEBUG, INFO, WARN, ERROR, or FATAL.""")
-tf.app.flags.DEFINE_string('checkpoint_dir', './results/'+daystr+'/'+FLAGS.save+str(FLAGS.target_level)+'_'+FLAGS.model
-                           +'_('+FLAGS.dataset+')_'+str(FLAGS.target_level)+'levels',
-                           """Constant""")
-tf.app.flags.DEFINE_string('log_dir', FLAGS.checkpoint_dir + '/log/',
-                           """Constant""")
-
-
 # tf.logging.set_verbosity(FLAGS.log)
-
-
 
 ##Writer에 작성 할 내용을 정의하는 함수
 def add_summaries(scalar_list=[], activation_list=[], grad_list=[], var_list=[],Wbin_list=[],Wfluc_list=[],Drift_step=[],Drift_value=[]):
@@ -90,20 +33,19 @@ def add_summaries(scalar_list=[], activation_list=[], grad_list=[], var_list=[],
                 tf.summary.histogram(var.op.name + '/gradients', grad)
 
         zip_list=[]
-        R_Wb_list = tf.get_collection(key='Quantized_weight')
-        R_Wfluc_list = tf.get_collection(key='Read_weight')
+        Wquan_list = tf.get_collection(key='Quantized_Weight')
+        R_Wfluc_list = tf.get_collection(key='Read_Weight')
         # Drift_step,Drift_value는 여기서 처리하기에는 예외가 많아서 nnUtils에서 drift꺼지더라도 직접 []을 추가해주기로 함
         # 예를 들어서 Drift1=False, Drift2=True면 Drift_step이 Wbin_list보다 짧게 나옴, 아래의 코드로 처리불가
         length=len(var_list)
         zip_list.append([[]] * length) if var_list==[] else zip_list.append(var_list) #이 코드는 그냥 아예 리스트가 안들어왔을 때를 위해
         zip_list.append([[]] * length) if Wbin_list==[] else zip_list.append(Wbin_list)
         zip_list.append([[]] * length) if Wfluc_list==[] else zip_list.append(Wfluc_list)
-        zip_list.append([[]] * length) if R_Wb_list==[] else zip_list.append(R_Wb_list)
         zip_list.append([[]] * length) if R_Wfluc_list == [] else zip_list.append(R_Wfluc_list)
+        zip_list.append([[]] * length) if Wquan_list==[] else zip_list.append(Wquan_list)
         zip_list.append(Drift_step)
         zip_list.append(Drift_value)
-
-        for W,Wbin,Wfluc,Real_Wbin,Real_Wfluc,Step,Value in zip(*zip_list):
+        for W,Wbin,Wfluc,Real_Wfluc,Real_Wbin,Step,Value in zip(*zip_list):
             # 1:이름 뽑아내기, 물론 여기서 새로 Fluctuated, Binarized 식으로 쓰는게 더 직관적이지만 기존의 텐서에서 이름 뽑아내는 명령어와
             # 2:split 함수 써보기 위해서 그냥 이렇게 한다.
             # 3:이 부분을 위에서 gradients 처리한 것처럼, W,Wbin,Wfluc 따로따로해줘도 된다, 어차피  똑같은 방식들이라, 길이 줄이려고 이렇게 한건데
@@ -114,23 +56,22 @@ def add_summaries(scalar_list=[], activation_list=[], grad_list=[], var_list=[],
                 tf.summary.histogram(name_layer + '/0/' + "Original_weight", W)
             else:
                 print("No W_list")
-            if Real_Wbin != []:
-                tf.summary.histogram(name_layer + '/1/' + 'Quantized_weight', Wbin)
-            else:
-                print("No Wbin_list")
             if Wbin != []:
-                tf.summary.histogram(name_layer + '/2/' + 'Target_resistance', Wbin)
+                tf.summary.histogram(name_layer + '/1/' + 'Target_resistance', Wbin)
             else:
                 print("No Wbin_list")
             if Wfluc!=[]:
-                tf.summary.histogram(name_layer + '/3/' + 'Written_resistance', Wfluc)
+                tf.summary.histogram(name_layer + '/2/' + 'Written_resistance', Wfluc)
             else:
                 print("No Wfluc_list")
             if Real_Wfluc != []:
-                tf.summary.histogram(name_layer + '/4/' + 'Read_weight', Wbin)
+                tf.summary.histogram(name_layer + '/3/' + 'Read_weight', Real_Wfluc)
             else:
                 print("No Wbin_list")
-
+            if Real_Wbin != []:
+                tf.summary.histogram(name_layer + '/4/' + 'Quantized_weight', Real_Wbin)
+            else:
+                print("No Wbin_list")
             # Kernel - mainly for CNN
             sz = W.get_shape().as_list()
             if len(sz) == 4 and sz[2] == 3:
@@ -152,14 +93,14 @@ def add_summaries(scalar_list=[], activation_list=[], grad_list=[], var_list=[],
                 index_history.append(index)
                 if W != []:
                     tf.summary.scalar(name_layer+ index_str + '/0/' + 'Original_weight', W[index])
-                if Real_Wbin != []:
-                    tf.summary.scalar(name_layer + index_str + '/1/' + 'Quantized_weight', Real_Wbin[index])
                 if Wbin != []:
-                    tf.summary.scalar(name_layer+ index_str + '/2/' + 'Target_resistance', Wbin[index])
+                    tf.summary.scalar(name_layer+ index_str + '/1/' + 'Target_resistance', Wbin[index])
                 if Wfluc != []:
-                    tf.summary.scalar(name_layer+ index_str + '/3/' + 'Written_resistance', Wfluc[index])
+                    tf.summary.scalar(name_layer+ index_str + '/2/' + 'Written_resistance', Wfluc[index])
                 if Real_Wfluc != []:
-                    tf.summary.scalar(name_layer + index_str + '/4/' + 'Read_weight', Real_Wfluc[index])
+                    tf.summary.scalar(name_layer + index_str + '/3/' + 'Read_weight', Real_Wfluc[index])
+                if Real_Wbin != []:
+                    tf.summary.scalar(name_layer + index_str + '/4/' + 'Quantized_weight', Real_Wbin[index])
                 if Value!=[] and Value.get_shape().as_list()[0] != 0:
                     tf.summary.scalar(name_layer+ index_str + '/5/' + 'dvalue', Value[index])
 
@@ -195,7 +136,6 @@ def add_summaries(scalar_list=[], activation_list=[], grad_list=[], var_list=[],
                 tf.summary.scalar(name_layer + "/Ratio_Drifted/1_125", ratio21)
                 tf.summary.scalar(name_layer + "/Ratio_Drifted/1_205", ratio22)
                 tf.summary.scalar(name_layer + "/Ratio_Drifted/1_300", ratio23)
-
     #tf.summary.scalar(activation.op.name + '/sparsity', tf.nn.zero_fraction(activation))
 
 if FLAGS.dataset=='cifar10':
@@ -211,7 +151,13 @@ def learning_rate_decay_fn(learning_rate, global_step,decay_steps=steps):
       decay_steps=decay_steps,
       decay_rate=0.8,
       staircase=True)
-
+def quantizeGrads(Grad_and_vars,target_level=FLAGS.W_target_level):
+    if target_level <= 256*256:
+        grads = []
+        for grad_and_vars in Grad_and_vars:
+            grads.append([nnUtils.quantize_G(grad_and_vars[0],target_level), grad_and_vars[1]])
+        return grads
+    return Grad_and_vars
 ## model을 data로 training 시켜주는 함수
 def train(model, data,
           batch_size=128,
@@ -234,7 +180,7 @@ def train(model, data,
         yt_one=tf.one_hot(yt,10)
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=yt_one, logits=y), name="loss")
         if Weight_decay:
-            loss=loss+tf.reduce_sum(WEIGHT_DECAY_FACTOR*tf.stack([tf.nn.l2_loss(i) for i in tf.get_collection('Original_Weight', scope='L')]))
+            loss=loss+tf.reduce_sum(Myoption.WEIGHT_DECAY_FACTOR*tf.stack([tf.nn.l2_loss(i) for i in tf.get_collection('Original_Weight', scope='L')]))
         accuracy=tf.reduce_mean(tf.cast(tf.equal(tf.arg_max(yt_one,1), tf.argmax(y, axis=1)),dtype=tf.float32),name="accuracy")
         # *이런 함수도 있어요.
         #accuracy = tf.reduce_mean(tf.cast(tf.nn.in_top_k(y, yt, 1), tf.float32))
@@ -245,17 +191,19 @@ def train(model, data,
                +tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope='L25') if FLAGS.Fine_tuning else None
     # * 원래는 이런 optimizer 썼었다,  근데 그 아래가 기능이 훨씬 많아서 갈아탔다.
     # lambda learning_rate: tf.train.MomentumOptimizer(learning_rate, momentum=0.9)
-    opt = tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer='Adam',
-                                          gradient_noise_scale=None, gradient_multipliers=None,
-                                          clip_gradients=None, # moving_average_decay=0.9,
-                                           update_ops=None, variables=vars_train, name=None,
-                                          learning_rate_decay_fn=learning_rate_decay_fn)
-    # * 이런 식으로 gradient  뽑아서  수정가능
-    #grads = opt.compute_gradients(loss)
-    #apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
+    # opt = tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer='SGD',
+    #                                       gradient_noise_scale=None, gradient_multipliers=None,
+    #                                       clip_gradients=None, # moving_average_decay=0.9,
+    #                                        update_ops=None, variables=vars_train, name=None,
+    #                                       learning_rate_decay_fn=learning_rate_decay_fn)
+    # # * 이런 식으로 gradient  뽑아서  수정가능
+    optimizer=tf.train.GradientDescentOptimizer(1)
+    grads = optimizer.compute_gradients(loss)
+    gradTrainBatch_quantize = quantizeGrads(grads,FLAGS.W_target_level)
+    opt = optimizer.apply_gradients(gradTrainBatch_quantize, global_step=global_step)
 
     print("Definite Moving Average...")
-    ema = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, global_step, name='average')
+    ema = tf.train.ExponentialMovingAverage(Myoption.MOVING_AVERAGE_DECAY, global_step, name='average')
     ema_op = ema.apply([loss, accuracy]+tf.trainable_variables())
     tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, ema_op)
 
@@ -265,12 +213,6 @@ def train(model, data,
     tf.summary.scalar('accuracy/training', accuracy_avg)
     check_loss = tf.check_numerics(loss, 'model diverged: loss->nan')
     tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, check_loss)
-    updates_collection = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-    # updates_collection은 여러 operation으로 이루어진 리스트고, train_op는 그 operation들을 실행하는 operation이다.
-    with tf.control_dependencies([opt]):
-        train_op = tf.group(*updates_collection)
-    print("Make summary for writer...")
-
     list_W = tf.get_collection('Original_Weight', scope='L')
     list_Wbin = tf.get_collection('Binarized_Weight', scope='L')
     list_Wfluc = tf.get_collection('Fluctuated_Weight', scope='L')
@@ -280,6 +222,15 @@ def train(model, data,
     list_pre_Wfluc = tf.get_collection('pre_Wfluc', scope='L')
     list_pre_Wbin_op = tf.get_collection('pre_Wbin_update_op', scope='L')
     list_pre_Wfluc_op = tf.get_collection('pre_Wfluc_update_op', scope='L')
+    clip_op_list=[]
+    for ww in list_W:
+        clip_op=tf.assign(ww,nnUtils.clip(ww,FLAGS.W_target_level))
+        clip_op_list+=[clip_op]
+    updates_collection = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    # updates_collection은 여러 operation으로 이루어진 리스트고, train_op는 그 operation들을 실행하는 operation이다.
+    with tf.control_dependencies([opt]):
+        train_op = tf.group(*updates_collection)
+    print("Make summary for writer...")
 
     if FLAGS.summary:
         add_summaries(scalar_list=[accuracy, loss],activation_list=tf.get_collection(tf.GraphKeys.ACTIVATIONS),
@@ -295,11 +246,13 @@ def train(model, data,
             log_device_placement=False,
             allow_soft_placement=True, gpu_options=gpu_options))
     sess.run(tf.global_variables_initializer())
+    for ww in list_W:
+         bbb=sess.run(tf.assign(ww,nnUtils.quantize_W(ww,FLAGS.W_target_level)))
     if FLAGS.Load_checkpoint:
         call_list=tf.get_collection(tf.GraphKeys.VARIABLES)
         print("******We will restore:",call_list)
         saver = tf.train.Saver(max_to_keep=1,var_list=call_list)
-        ckpt = tf.train.get_checkpoint_state(load_checkpoint_path)
+        ckpt = tf.train.get_checkpoint_state(Myoption.load_checkpoint_path)
         if ckpt and ckpt.model_checkpoint_path:
             # Restores from checkpoint
             saver.restore(sess, ckpt.model_checkpoint_path)
@@ -326,12 +279,23 @@ def train(model, data,
         "Drift1 : ",FLAGS.Drift1,"\nDrift2 : ",FLAGS.Drift2,"\nVariation : ",FLAGS.Variation,file=file)
     customfunc.magic_print(
         "LR : ", FLAGS.learning_rate, "\nbatch_size : ", FLAGS.batch_size, "\nDataset : ", FLAGS.dataset, file=file)
-
+    testt=[]
     for i in range(num_epochs):
+        if len(Myoption.LR_schedule)/2:
+            if i == Myoption.LR_schedule[0]:
+                Myoption.LR_schedule.pop(0)
+                LR_new = Myoption.LR_schedule.pop(0)
+                if LR_new == 0:
+                    print('Optimization Ended!')
+                    exit(0)
+                LR_old = sess.run(Myoption.LR)
+                sess.run(Myoption.LR.assign(LR_new))
+                print('lr: %f -> %f' % (LR_old, LR_new))
         customfunc.magic_print('Started epoch %d' % (i + 1),file=file)
         count_num=np.array([0,0,0,0,0,0,0,0,0,0])
         for j in tqdm(range(num_batches)):
             list_run = sess.run(list_Wbin+list_Wfluc+[train_op, loss]+[y,yt])
+            sess.run(clip_op_list)
             # 각 iteration에서 train_op를 통해 업데이트를 하기 전에 list_Wbin,Wfluc에 있는 var들의 값을 save for next batch
             unique_elements,elements_counts=np.unique(list_run[-1],return_counts=True)
             num_set=dict(zip(unique_elements,elements_counts))
@@ -344,14 +308,13 @@ def train(model, data,
                     sess.run(list_pre_Wbin_op[index],{list_pre_Wbin[index]:value})
                 for index, value in enumerate(list_run[len(list_Wbin):len(list_Wbin + list_Wfluc)]):
                     sess.run(list_pre_Wfluc_op[index],{list_pre_Wfluc[index]:value})
-            if j%150==0:
+            if j%100==0:
                 summary_writer.add_summary(sess.run(summary_op), global_step=sess.run(global_step))
         # print("Output:", list_run[-2][:10])
         # print("Softmax:", sess.run(tf.nn.softmax(list_run[-2][:10])))
         # print("loss:", sess.run(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(list_run[-1],10),logits=list_run[-2]))[:10])
         step, acc_value, loss_value, summary = sess.run([global_step, accuracy_avg, loss_avg, summary_op])
         """
-        위에서 summary 는 무슨역할을 하는거지, suumary_op 를 run하면 뭘 반환하는거지.
         20171204:avg기능을 빼고 코드를 돌려보니까 training set에서의 정확도가 98퍼가 되었다가 96퍼가 되었다가 왔다갔다한다.
         이유: 위에서 accuracy 를 돌릴 때 데이터가 64개밖에 안쓰인다, 그래서 정확도의 격차가 좀 있었던 것
         """
@@ -372,16 +335,23 @@ def train(model, data,
             if patience > 20:
                 customfunc.magic_print("Stop this training at epoch"+str(i+1)+", because accuracy may be saturated",file=file)
                 from openpyxl import Workbook
-                wb=Workbook()
-                file_name='Accuracy_log.xlsx'
-                ws=wb.active
-                ws.title="Accuracy_log"
-                row=3 if FLAGS.dataset=='cifar10' else 1
-                ws.cell(column=FLAGS.target_level, row=row,value=best_acc)
-                ws.cell(column=FLAGS.target_level, row=row+1, value=test_acc)
-                wb.save(filename=file_name)
+                from openpyxl import load_workbook
+                file_name = 'Accuracy_log'
+                if gfile.Exists(file_name+'.xlsx'):
+                    wb=load_workbook(filename=file_name+'.xlsx')
+                    ws=wb[file_name]
+                else:
+                    wb=Workbook()
+                    ws=wb.active
+                    ws.title=file_name
+                row=10 if FLAGS.dataset=='cifar10' else 2
+                ws.cell(column=FLAGS.target_level+1, row=row, value=best_acc)
+                ws.cell(column=FLAGS.target_level+1, row=row + 1, value=test_acc)
+                ws.cell(column=FLAGS.target_level+1, row=row + 2, value=acc_value)
+                ws.cell(column=FLAGS.target_level+1, row=row + 3, value=i)
+                wb.save(filename=file_name+'.xlsx')
                 break
-        customfunc.magic_print('Best     - Accuracy: %.3f' % best_acc,file=file)
+        customfunc.magic_print('Best     - Accuracy: %.3f(patience=%d)' % (best_acc,patience),file=file)
         summary_out = tf.Summary()
         summary_out.ParseFromString(summary)
         summary_out.value.add(tag='accuracy/test', simple_value=test_acc)

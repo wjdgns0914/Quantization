@@ -1,32 +1,7 @@
-python main.py --model "MLP_00_Basic_512*3" --target_level 2 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 3 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 4 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 5 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 6 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 7 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 8 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 9 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 10 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 11 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 12 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 13 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 14 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 15 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 16 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 17 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_512*3" --target_level 18 --dataset 'cifar10'
-python main.py --model "MLP_00_Basic_256*2" --target_level 2 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 3 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 4 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 5 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 6 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 7 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 8 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 9 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 10 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 11 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 12 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 13 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 14 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 15 --dataset 'MNIST'
-python main.py --model "MLP_00_Basic_256*2" --target_level 16 --dataset 'MNIST'
+python main.py --target_level 2
+python main.py --target_level 3
+python main.py --target_level 5
+python main.py --target_level 7
+python main.py --target_level 12
+python main.py --target_level 16
+
