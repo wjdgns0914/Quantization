@@ -197,9 +197,9 @@ def memory_mode(x,choice=0):
     # rr=tr
     rr=tf.to_float(customfunc.make_index(wr,r_ref))
     if target_level%2==1:
-        rr= (rr-tf.ceil(target_level/2))/scalebybits(bits)
+        rr = (rr-tf.ceil(target_level/2))/scalebybits(bits)
     else:
-        rr =(2*rr-1-target_level)/scalebybits(bits+1)
+        rr = (2*rr-1-target_level)/scalebybits(bits+1)
     tf.add_to_collection('Read_Weight', rr) # stage4
     return rr
 

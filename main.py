@@ -279,7 +279,6 @@ def train(model, data,
         "Drift1 : ",FLAGS.Drift1,"\nDrift2 : ",FLAGS.Drift2,"\nVariation : ",FLAGS.Variation,file=file)
     customfunc.magic_print(
         "LR : ", FLAGS.learning_rate, "\nbatch_size : ", FLAGS.batch_size, "\nDataset : ", FLAGS.dataset, file=file)
-    testt=[]
     for i in range(num_epochs):
         if len(Myoption.LR_schedule)/2:
             if i == Myoption.LR_schedule[0]:
