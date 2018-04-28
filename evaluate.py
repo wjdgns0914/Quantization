@@ -8,7 +8,8 @@ import time
 import numpy as np
 import tensorflow as tf
 from data import get_data_provider
-
+import customfunc
+FLAGS = tf.app.flags.FLAGS
 """
 질문1:sess를 인자로 왜 받아올까? 내가 더한거였다..삭제.
 질문2:왜 세션을 한번 더 여는걸까?
@@ -18,7 +19,8 @@ from data import get_data_provider
 """
 def evaluate(model, dataset,
         batch_size=100,
-        checkpoint_dir='./checkpoint'):
+        checkpoint_dir='./checkpoint',
+        now_epoch=1):
     with tf.Graph().as_default() as g:
         data = get_data_provider(dataset, training=False)
         x, yt = data.next_batch(batch_size)
@@ -30,7 +32,9 @@ def evaluate(model, dataset,
         # loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=yt, logits=y))
         # accuracy = tf.reduce_mean(tf.cast(tf.nn.in_top_k(y,yt,1), tf.float32))
         yt_one=tf.one_hot(yt,10)
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=yt_one, logits=y))
+        # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=yt_one, logits=y))
+        softmax = tf.nn.softmax(logits=y)
+        loss = tf.reduce_mean(-tf.reduce_sum(yt_one * tf.log(softmax + 0.00000001), axis=[1]))
         accuracy=tf.reduce_mean(tf.cast(tf.equal(yt, tf.cast(tf.argmax(y, dimension=1),dtype=tf.int32)),dtype=tf.float32))
         saver = tf.train.Saver()#variables_to_restore
         # Configure options for session
@@ -62,15 +66,33 @@ def evaluate(model, dataset,
             total_acc = 0  # Counts the number of correct predictions per batch.
             total_loss = 0 # Sum the loss of predictions per batch.
             step = 0
-            while step < num_batches and not coord.should_stop():
+            count_confidence = np.zeros(shape=[10, 10])
+            count_correct = np.zeros(shape=[10, 1])
+            count_error = np.zeros(shape=[10, 1])
 
-              acc_val, loss_val,xval,yval = sess.run([accuracy, loss,x,yt])
+            while step < num_batches and not coord.should_stop():
+              if now_epoch%10==0:
+                  acc_val, loss_val,xval,yval,softmax_value,softmax_max_index = sess.run([accuracy, loss,x,yt]+[softmax]+[tf.arg_max(softmax,dimension=1)])
+                  is_correct = (yval == softmax_max_index).reshape([batch_size, 1])
+                  for number in range(10):
+                      is_this_number = (yval==number).reshape([batch_size,1])
+                      count_confidence[number,:]+=np.sum(((~is_correct)*is_this_number)*softmax_value,axis=0)
+                      count_correct[number,0]+=np.sum((is_correct*is_this_number),axis=0)
+                      count_error[number,0] +=np.sum(((~is_correct)*is_this_number),axis=0)
+              else:
+                  acc_val, loss_val, xval, yval= sess.run([accuracy, loss, x, yt])
               total_acc += acc_val
               total_loss += loss_val
               step += 1
             # Compute precision and loss
             total_acc /= num_batches
             total_loss /= num_batches
+            if now_epoch % 5 == 0:
+                file = open(FLAGS.checkpoint_dir + "/save_confidence.py", "a")
+                customfunc.magic_print("\nNow_epochs : ", now_epoch, file=file)
+                customfunc.magic_print("\ncount_error : ", count_error, "\ncount_correct : ", count_correct, "\ncount_not_confidence : ",
+                    count_confidence/count_error, file=file)
+                file.close()
 
 
         except Exception as e:  # pylint: disable=broad-except

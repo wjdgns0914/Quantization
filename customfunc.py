@@ -57,26 +57,24 @@ def make_index(x,ref):
     #     level = tf.ones(shape=weight_shape, dtype=tf.int32) * (leng - i + 1)
     #     mask = tf.logical_and(x>=ref[leng-i-1],tf.equal(index,1))
     #     index = tf.where(mask,level,index)
-    # weight_shape=x.get_shape().as_list()
-    # index=tf.zeros(shape=weight_shape,dtype=tf.float32)
 
     # case 2
-    weight_shape = x.get_shape().as_list()
-    reshaped = tf.reshape(x, [weight_shape[0], -1])
-    new_weight_shape= reshaped.get_shape().as_list()
-    index=tf.Variable(initial_value=tf.zeros(shape=new_weight_shape,dtype=tf.float32),trainable=False)
-    for i in range(new_weight_shape[0]):
-        for j in range(new_weight_shape[1]):
-            y_one=staircase(reshaped[i,j],ref)
-            op = tf.assign(index[i, j], y_one)
-            tf.add_to_collection('op', op)
-    op_list = tf.get_collection('op')
-    with tf.control_dependencies(op_list):
-        index = tf.identity(index)
+    # weight_shape = x.get_shape().as_list()
+    # reshaped = tf.reshape(x, [weight_shape[0], -1])
+    # new_weight_shape= reshaped.get_shape().as_list()
+    # index=tf.Variable(initial_value=tf.zeros(shape=new_weight_shape,dtype=tf.float32),trainable=False)
+    # for i in range(new_weight_shape[0]):
+    #     for j in range(new_weight_shape[1]):
+    #         y_one=staircase(reshaped[i,j],ref)
+    #         op = tf.assign(index[i, j], y_one)
+    #         tf.add_to_collection('op', op)
+    # op_list = tf.get_collection('op')
+    # with tf.control_dependencies(op_list):
+    #     index = tf.identity(index)
 
     # case 3
-    # index = tf.to_float(x>=ref[0])
-    # for ref in ref[1:]:
-    #     index += tf.to_float(x>=ref)
-    # index=index+1
+    index = tf.to_float(x>=ref[0])
+    for ref in ref[1:]:
+        index += tf.to_float(x>=ref)
+    index=index+1
     return index

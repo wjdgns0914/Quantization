@@ -178,7 +178,10 @@ def train(model, data,
     # Define loss and optimizer
     with tf.name_scope('objective'):
         yt_one=tf.one_hot(yt,10)
+
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=yt_one, logits=y), name="loss")
+        # softmax = tf.nn.softmax(logits=y)
+        # loss = tf.reduce_mean(-tf.reduce_sum(yt_one * tf.log(softmax + 0.00000001), axis=[1]))
         if Weight_decay:
             loss=loss+tf.reduce_sum(Myoption.WEIGHT_DECAY_FACTOR*tf.stack([tf.nn.l2_loss(i) for i in tf.get_collection('Original_Weight', scope='L')]))
         accuracy=tf.reduce_mean(tf.cast(tf.equal(tf.arg_max(yt_one,1), tf.argmax(y, axis=1)),dtype=tf.float32),name="accuracy")
@@ -191,16 +194,16 @@ def train(model, data,
                +tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope='L25') if FLAGS.Fine_tuning else None
     # * 원래는 이런 optimizer 썼었다,  근데 그 아래가 기능이 훨씬 많아서 갈아탔다.
     # lambda learning_rate: tf.train.MomentumOptimizer(learning_rate, momentum=0.9)
-    # opt = tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer='SGD',
-    #                                       gradient_noise_scale=None, gradient_multipliers=None,
-    #                                       clip_gradients=None, # moving_average_decay=0.9,
-    #                                        update_ops=None, variables=vars_train, name=None,
-    #                                       learning_rate_decay_fn=learning_rate_decay_fn)
+    opt = tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer='Adam',
+                                          gradient_noise_scale=None, gradient_multipliers=None,
+                                          clip_gradients=None, # moving_average_decay=0.9,
+                                           update_ops=None, variables=vars_train, name=None)
+
     # # * 이런 식으로 gradient  뽑아서  수정가능
-    optimizer=tf.train.GradientDescentOptimizer(1)
-    grads = optimizer.compute_gradients(loss)
-    gradTrainBatch_quantize = quantizeGrads(grads,FLAGS.W_target_level)
-    opt = optimizer.apply_gradients(gradTrainBatch_quantize, global_step=global_step)
+    # optimizer=tf.train.GradientDescentOptimizer(learning_rate)
+    # grads = optimizer.compute_gradients(loss)
+    # gradTrainBatch_quantize = quantizeGrads(grads,FLAGS.W_target_level)
+    # opt = optimizer.apply_gradients(gradTrainBatch_quantize, global_step=global_step)
 
     print("Definite Moving Average...")
     ema = tf.train.ExponentialMovingAverage(Myoption.MOVING_AVERAGE_DECAY, global_step, name='average')
@@ -222,10 +225,10 @@ def train(model, data,
     list_pre_Wfluc = tf.get_collection('pre_Wfluc', scope='L')
     list_pre_Wbin_op = tf.get_collection('pre_Wbin_update_op', scope='L')
     list_pre_Wfluc_op = tf.get_collection('pre_Wfluc_update_op', scope='L')
-    clip_op_list=[]
-    for ww in list_W:
-        clip_op=tf.assign(ww,nnUtils.clip(ww,FLAGS.W_target_level))
-        clip_op_list+=[clip_op]
+    # clip_op_list=[]
+    # for ww in list_W:
+    #     clip_op=tf.assign(ww,nnUtils.clip(ww,FLAGS.W_target_level))
+    #     clip_op_list+=[clip_op]
     updates_collection = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     # updates_collection은 여러 operation으로 이루어진 리스트고, train_op는 그 operation들을 실행하는 operation이다.
     with tf.control_dependencies([opt]):
@@ -279,23 +282,27 @@ def train(model, data,
         "Drift1 : ",FLAGS.Drift1,"\nDrift2 : ",FLAGS.Drift2,"\nVariation : ",FLAGS.Variation,file=file)
     customfunc.magic_print(
         "LR : ", FLAGS.learning_rate, "\nbatch_size : ", FLAGS.batch_size, "\nDataset : ", FLAGS.dataset, file=file)
+
+
     for i in range(num_epochs):
-        if len(Myoption.LR_schedule)/2:
-            if i == Myoption.LR_schedule[0]:
-                Myoption.LR_schedule.pop(0)
-                LR_new = Myoption.LR_schedule.pop(0)
-                if LR_new == 0:
-                    print('Optimization Ended!')
-                    exit(0)
-                LR_old = sess.run(Myoption.LR)
-                sess.run(Myoption.LR.assign(LR_new))
-                print('lr: %f -> %f' % (LR_old, LR_new))
+        # if len(Myoption.LR_schedule)/2:
+        #     if i == Myoption.LR_schedule[0]:
+        #         Myoption.LR_schedule.pop(0)
+        #         LR_new = Myoption.LR_schedule.pop(0)
+        #         if LR_new == 0:
+        #             print('Optimization Ended!')
+        #             exit(0)
+        #         LR_old = sess.run(Myoption.LR)
+        #         sess.run(Myoption.LR.assign(LR_new))
+        #         print('lr: %f -> %f' % (LR_old, LR_new))
         customfunc.magic_print('Started epoch %d' % (i + 1),file=file)
         count_num=np.array([0,0,0,0,0,0,0,0,0,0])
         for j in tqdm(range(num_batches)):
             list_run = sess.run(list_Wbin+list_Wfluc+[train_op, loss]+[y,yt])
-            sess.run(clip_op_list)
+            # sess.run(clip_op_list)
             # 각 iteration에서 train_op를 통해 업데이트를 하기 전에 list_Wbin,Wfluc에 있는 var들의 값을 save for next batch
+
+
             unique_elements,elements_counts=np.unique(list_run[-1],return_counts=True)
             num_set=dict(zip(unique_elements,elements_counts))
             #ii라는 숫자가 dictionary에 들어있다면 카운트에 더해준다.
@@ -322,7 +329,7 @@ def train(model, data,
         customfunc.magic_print('Training - Accuracy: %.3f' % acc_value, '  Loss:%.3f' % loss_value,file=file)
         saver.save(sess, save_path=checkpoint_dir + '/model.ckpt', global_step=global_step)
 
-        test_acc, test_loss = evaluate(model, FLAGS.dataset,checkpoint_dir=checkpoint_dir)# log_dir=log_dir)
+        test_acc, test_loss = evaluate(model, FLAGS.dataset,checkpoint_dir=checkpoint_dir,now_epoch=i)# log_dir=log_dir)
         customfunc.magic_print('Test     - Accuracy: %.3f' % test_acc, '  Loss:%.3f' % test_loss,file=file)
 
         if best_acc<test_acc:

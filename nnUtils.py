@@ -194,13 +194,13 @@ def memory_mode(x,choice=0):
         wr=tr
     tf.add_to_collection('Fluctuated_Weight', wr) # stage3
     # read phase
-    # rr=tr
-    rr=tf.to_float(customfunc.make_index(wr,r_ref))
-    if target_level%2==1:
-        rr = (rr-tf.ceil(target_level/2))/scalebybits(bits)
-    else:
-        rr = (2*rr-1-target_level)/scalebybits(bits+1)
-    tf.add_to_collection('Read_Weight', rr) # stage4
+    rr=wr
+    # rr=tf.to_float(customfunc.make_index(wr,r_ref))
+    # if target_level%2==1:
+    #     rr = (rr-tf.ceil(target_level/2))/scalebybits(bits)
+    # else:
+    #     rr = (2*rr-1-target_level)/scalebybits(bits+1)
+    # tf.add_to_collection('Read_Weight', rr) # stage4
     return rr
 
 def fluctuate(x,scale=1,target_level=FLAGS.Wq_target_level,Drift=False):
@@ -217,10 +217,14 @@ def fluctuate(x,scale=1,target_level=FLAGS.Wq_target_level,Drift=False):
     tf.add_to_collection('pre_Wfluc_update_op', pre_Wfluc_update_op)
 
     if FLAGS.Variation==True:
-        Reset_Meanmean, Reset_Meanstd = 0., 0.1707
-        Reset_Stdmean, Reset_Stdstd = 0.0942, 0.01884
-        Set_Meanmean, Set_Meanstd = 0., 0.1538
-        Set_Stdmean, Set_Stdstd = 0.1311, 0.06894
+        # Reset_Meanmean, Reset_Meanstd = 0., 0.1707
+        # Reset_Stdmean, Reset_Stdstd = 0.0942, 0.01884
+        # Set_Meanmean, Set_Meanstd = 0., 0.1538
+        # Set_Stdmean, Set_Stdstd = 0.1311, 0.06894
+        Reset_Meanmean, Reset_Meanstd = 0., 0.0000000001
+        Reset_Stdmean, Reset_Stdstd = 0., 0.
+        Set_Meanmean, Set_Meanstd = 0., 0.0000000001
+        Set_Stdmean, Set_Stdstd = 0., 0.
         # 퍼센테이지 맵핑으로 간단하게 구했다,정밀하지는 않다.
     else:
         Reset_Meanmean, Reset_Meanstd = 0., 0.0000000001
@@ -296,12 +300,17 @@ def BinarizedWeightOnlyAffine(nOutputPlane, bias=True, name=None, reuse=None, Dr
             reshaped = tf.reshape(x, [x.get_shape().as_list()[0], -1])
             nInputPlane = reshaped.get_shape().as_list()[1]
             w = tf.get_variable('weight', [nInputPlane, nOutputPlane], initializer=tf.contrib.layers.xavier_initializer())
-            read_w=tf.stop_gradient(memory_mode(w, choice=0) - w) + w
-            quantized_w = quantize_W(read_w,FLAGS.Wq_target_level)
+            # read_w=tf.stop_gradient(memory_mode(w, choice=0) - w) + w
+            quantized_w = quantize_W(w,FLAGS.Wq_target_level)
+            bin_w = quantize_old(w)
+            fluc_w = fluctuate(bin_w,Drift=Drift)
+            tf.add_to_collection('Original_Weight', w)
+            tf.add_to_collection('Binarized_Weight', bin_w)
+            tf.add_to_collection('Fluctuated_Weight', fluc_w)
             # tf.add_to_collection('Original_Weight',w)
             # tf.add_to_collection("Drift_value", tf.convert_to_tensor([]))
             # tf.add_to_collection("Drift_step", tf.convert_to_tensor([]))
-            output = tf.matmul(reshaped, quantized_w)
+            output = tf.matmul(reshaped, fluc_w)
             if bias:
                 b = tf.get_variable('bias', [nOutputPlane],initializer=tf.zeros_initializer)
                 output = tf.nn.bias_add(output, b)

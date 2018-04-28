@@ -6,20 +6,20 @@ WEIGHT_DECAY_FACTOR = 0.0001
 daystr,timestr=customfunc.beautifultime()
 FLAGS = tf.app.flags.FLAGS
 # Basic model parameters which will be often modified.
-tf.app.flags.DEFINE_integer('batch_size', 50,
+tf.app.flags.DEFINE_integer('batch_size', 32,
                             """Number of images to process in a batch.""")
 tf.app.flags.DEFINE_integer('num_epochs', 200,
                             """Number of epochs to train. -1 for unlimited""")
 tf.app.flags.DEFINE_float('learning_rate', 0.0001,
                             """Initial learning rate used.""")
-tf.app.flags.DEFINE_string('dataset', 'cifar10',
+tf.app.flags.DEFINE_string('dataset', 'MNIST',
                            """Name of dataset used.""")
-tf.app.flags.DEFINE_string('model','MLP_00_Basic_512*3',    #'Probe_MLP',MLP_00_Basicvanila  MLP_00_Basic_512*3
+tf.app.flags.DEFINE_string('model','MLP_00_Basic',    #'Probe_MLP',MLP_00_Basicvanila  MLP_00_Basic_512*3
                            """Name of loaded model.""")
 # Level2 Parameters which will be sometimes modified.
-tf.app.flags.DEFINE_integer('W_target_level', 2**8-1,
+tf.app.flags.DEFINE_integer('W_target_level', 2**32-1,
                             """Target level.""")
-tf.app.flags.DEFINE_integer('Wq_target_level', 2**2-1,
+tf.app.flags.DEFINE_integer('Wq_target_level', 2,
                             """Target level.""")
 tf.app.flags.DEFINE_float('target_std', 0.,
                             """Target std.""")
@@ -27,7 +27,7 @@ tf.app.flags.DEFINE_bool('summary', True,                   #Log only include ac
                            """Record summary.""")
 tf.app.flags.DEFINE_bool('summary2', True,                 #Log also include histogram, weight's scalar graph..etc
                            """Record summary2.""")
-tf.app.flags.DEFINE_bool('Variation', False,
+tf.app.flags.DEFINE_bool('Variation', True,
                            """Variation or Not.""")
 tf.app.flags.DEFINE_bool('Drift1', False,
                            """Drift or Not.""")
@@ -56,5 +56,5 @@ tf.app.flags.DEFINE_string('checkpoint_dir', './results/'+daystr+'/'+FLAGS.save+
 tf.app.flags.DEFINE_string('log_dir', FLAGS.checkpoint_dir + '/log/',
                            """Constant""")
 
-LR = tf.Variable(initial_value=0., trainable=False, name='lr', dtype=tf.float32)
-LR_schedule = [0, 8, 200, 1,250,1./8,300,0]
+# LR = tf.Variable(initial_value=0., trainable=False, name='lr', dtype=tf.float32)
+# LR_schedule = [0, 8, 200, 1,250,1./8,300,0]
