@@ -8,13 +8,13 @@
 
 import time
 import tensorflow as tf
-import customfunc
+import funcCustom
 
 for target_level in range(2,8):
 
     tf.reset_default_graph()
     time.sleep(1)
-    daystr, timestr = customfunc.beautifultime()
+    daystr, timestr = funcCustom.beautifultime()
 
     mean_weight=0.
     std_weight=0.7
@@ -27,7 +27,7 @@ for target_level in range(2,8):
     x1=tf.round(x*(target_level-1))
     x2=x1/(target_level-1)
     x2=2*x2-1
-    fluc = x2+customfunc.get_distrib(std_param, shape)
+    fluc = x2 + funcCustom.get_distrib(std_param, shape)
 
     tf.summary.histogram("Raw data",x)
     tf.summary.histogram("Bin number",x1)

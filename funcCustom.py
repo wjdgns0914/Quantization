@@ -5,6 +5,7 @@ import tensorflow as tf
 def beautifultime():
     timestr = [str(x) for x in list(datetime.now().timetuple())[:6]]
     timestr[1] = timestr[1].rjust(2, '0')
+    timestr[2] = timestr[2].rjust(2, '0')
     day = '-'.join(timestr[:3])
     time = '-'.join(timestr[3:])
     #time = '[' + ':'.join(timestr[3:]) + ']'
@@ -76,5 +77,4 @@ def make_index(x,ref):
     index = tf.to_float(x>=ref[0])
     for ref in ref[1:]:
         index += tf.to_float(x>=ref)
-    index=index+1
     return index

@@ -11,7 +11,7 @@ import numpy as np
 # from progress.bar import Bar
 from datetime import datetime
 from tensorflow.python.platform import gfile
-from data import *
+from funcData import *
 from evaluate import evaluate
 from tqdm import tqdm
 from tensorflow.python.framework import ops
